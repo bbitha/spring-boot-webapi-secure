@@ -19,6 +19,10 @@
 
     <properties>
         <java.version>21</java.version>
+        <!-- Umbral real que aplica el gate (falla con CVSS >= 7). En CI, el job
+             de Dependency-Check puede recibir un umbral mas alto solo para que
+             termine de generar los reportes; el gate sigue exigiendo 7. -->
+        <dc.failBuildOnCVSS>7</dc.failBuildOnCVSS>
     </properties>
 
     <dependencies>
@@ -88,17 +92,39 @@
             <plugin>
                 <groupId>org.owasp</groupId>
                 <artifactId>dependency-check-maven</artifactId>
-                <version>11.1.1</version>
+                <version>13.0.0</version>
                 <configuration>
-                    <failBuildOnCVSS>7</failBuildOnCVSS>
-                    <nvdApiKey>05028C6D-2870-4358-A719-5424DDA781B3</nvdApiKey>
+                    <failBuildOnCVSS>${dc.failBuildOnCVSS}</failBuildOnCVSS>
+                    <nvdApiKeyEnvironmentVariable>NVD_API_KEY</nvdApiKeyEnvironmentVariable>
+                    <!-- Desde la 12.2.2, el analizador OSS Index exige credenciales
+                         de Sonatype; lo desactivamos porque no las usamos. -->
+                    <ossindexAnalyzerEnabled>false</ossindexAnalyzerEnabled>
+                    <!-- Fuera de ~/.m2 para poder cachear la base de la NVD por
+                         separado del repositorio de Maven en GitHub Actions. -->
+                    <dataDirectory>${user.home}/.dependency-check/data</dataDirectory>
+                    <formats>
+                        <format>HTML</format>
+                        <format>JSON</format>
+                        <format>SARIF</format>
+                    </formats>
                 </configuration>
             </plugin>
-            <!-- SpotBugs -->
+            <!-- SpotBugs + FindSecBugs -->
             <plugin>
                 <groupId>com.github.spotbugs</groupId>
                 <artifactId>spotbugs-maven-plugin</artifactId>
                 <version>4.8.6.2</version>
+                <configuration>
+                    <xmlOutput>true</xmlOutput>
+                    <htmlOutput>true</htmlOutput>
+                    <plugins>
+                        <plugin>
+                            <groupId>com.h3xstream.findsecbugs</groupId>
+                            <artifactId>findsecbugs-plugin</artifactId>
+                            <version>1.14.0</version>
+                        </plugin>
+                    </plugins>
+                </configuration>
             </plugin>
             <!-- CycloneDX BOM Generator -->
             <plugin>
