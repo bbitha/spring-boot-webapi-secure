@@ -21,7 +21,10 @@ public class ProductController {
 
     @GetMapping("/search")
     public List<Map<String, Object>> search(@RequestParam(defaultValue = "") String name) {
-        String sql = "SELECT id, name, price FROM products WHERE name LIKE ?";
-        return jdbcTemplate.queryForList(sql, "%" + name + "%");
+        // REGRESION INTENCIONAL (prueba del Paso 7.6): vuelve a concatenar el
+        // parametro directamente en el SQL para confirmar que el pipeline
+        // bloquea el merge. No fusionar este PR.
+        String sql = "SELECT id, name, price FROM products WHERE name LIKE '%" + name + "%'";
+        return jdbcTemplate.queryForList(sql);
     }
 }
