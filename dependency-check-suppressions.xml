@@ -1,13 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Supresiones de OWASP Dependency-Check. Cada entrada es por CVE y
-  packageUrl EXACTO (version incluida, sin regex): si la dependencia
-  cambia de version, la supresion deja de aplicar y el hallazgo vuelve a
-  bloquear. Cada una tiene fecha "until" de revision.
+  Supresiones de OWASP Dependency-Check. Cada bloque es por CVE + un
+  packageUrl anclado a la version EXACTA (si la dependencia cambia de
+  version, deja de aplicar y el hallazgo vuelve a bloquear). Se usa
+  regex="true" solo para cubrir todos los JAR de un mismo release de
+  Spring Framework / Spring Security (comparten CVEs porque NVD liga el
+  aviso al "producto" completo, y Dependency-Check lo matchea contra
+  cada JAR de ese release); el regex esta anclado por groupId y por
+  "@<version exacta>$", nunca abierto a otras versiones. Cada una tiene
+  fecha "until" de revision.
 
   Trivy no lee este archivo (solo lo usa el plugin de Dependency-Check);
-  scripts/quality_gate.py lo vuelve a leer para aplicar la misma
-  excepcion documentada tambien sobre los hallazgos de Trivy.
+  scripts/quality_gate.py lo vuelve a leer (incluyendo las entradas con
+  regex) para aplicar la misma excepcion documentada tambien sobre los
+  hallazgos de Trivy.
 
   Contexto (ver remediacion.md): en octubre de 2026 la linea Spring
   Framework 6.2.x / Spring Security 6.5.x (la que gestiona Spring Boot
@@ -28,12 +34,7 @@
         ni XsltView configurados en ningun lado del codigo. -->
    <suppress until="2027-01-06Z">
       <notes><![CDATA[No aplica: sin XsltView ni ViewResolver configurado. Ver nota superior del archivo.]]></notes>
-      <packageUrl>pkg:maven/org.springframework/spring-core@6.2.19</packageUrl>
-      <cve>CVE-2026-47884</cve>
-   </suppress>
-   <suppress until="2027-01-06Z">
-      <notes><![CDATA[No aplica: sin XsltView ni ViewResolver configurado. Trivy (a diferencia de Dependency-Check) asocia este CVE tambien a spring-webmvc. Ver nota superior del archivo.]]></notes>
-      <packageUrl>pkg:maven/org.springframework/spring-webmvc@6.2.19</packageUrl>
+      <packageUrl regex="true">^pkg:maven/org\.springframework/[^@]+@6\.2\.19$</packageUrl>
       <cve>CVE-2026-47884</cve>
    </suppress>
 
@@ -44,16 +45,7 @@
         WebFlux) son todos exclusivos de WebFlux. -->
    <suppress until="2027-01-06Z">
       <notes><![CDATA[No aplica: la app usa Spring MVC (Servlet/Tomcat), no spring-boot-starter-webflux. Ver nota superior del archivo.]]></notes>
-      <packageUrl>pkg:maven/org.springframework/spring-core@6.2.19</packageUrl>
-      <cve>CVE-2026-47885</cve>
-      <cve>CVE-2026-47889</cve>
-      <cve>CVE-2026-47891</cve>
-      <cve>CVE-2026-47892</cve>
-      <cve>CVE-2026-47893</cve>
-   </suppress>
-   <suppress until="2027-01-06Z">
-      <notes><![CDATA[No aplica: la app usa Spring MVC (Servlet/Tomcat), no spring-boot-starter-webflux. Ver nota superior del archivo.]]></notes>
-      <packageUrl>pkg:maven/org.springframework/spring-webmvc@6.2.19</packageUrl>
+      <packageUrl regex="true">^pkg:maven/org\.springframework/[^@]+@6\.2\.19$</packageUrl>
       <cve>CVE-2026-47885</cve>
       <cve>CVE-2026-47889</cve>
       <cve>CVE-2026-47891</cve>
@@ -66,13 +58,7 @@
         fragmentos de vista. -->
    <suppress until="2027-01-06Z">
       <notes><![CDATA[No aplica: la app no expone endpoints SSE ni fragmentos de vista. Ver nota superior del archivo.]]></notes>
-      <packageUrl>pkg:maven/org.springframework/spring-core@6.2.19</packageUrl>
-      <cve>CVE-2026-47890</cve>
-      <cve>CVE-2026-59313</cve>
-   </suppress>
-   <suppress until="2027-01-06Z">
-      <notes><![CDATA[No aplica: la app no expone endpoints SSE ni fragmentos de vista. Ver nota superior del archivo.]]></notes>
-      <packageUrl>pkg:maven/org.springframework/spring-webmvc@6.2.19</packageUrl>
+      <packageUrl regex="true">^pkg:maven/org\.springframework/[^@]+@6\.2\.19$</packageUrl>
       <cve>CVE-2026-47890</cve>
       <cve>CVE-2026-59313</cve>
    </suppress>
@@ -84,13 +70,7 @@
         apagado por defecto. -->
    <suppress until="2027-01-06Z">
       <notes><![CDATA[No aplica: no se evaluan expresiones SpEL de usuario y el compilador SpEL no esta habilitado. Ver nota superior del archivo.]]></notes>
-      <packageUrl>pkg:maven/org.springframework/spring-core@6.2.19</packageUrl>
-      <cve>CVE-2026-47886</cve>
-      <cve>CVE-2026-59283</cve>
-   </suppress>
-   <suppress until="2027-01-06Z">
-      <notes><![CDATA[No aplica: no se evaluan expresiones SpEL de usuario y el compilador SpEL no esta habilitado. Ver nota superior del archivo.]]></notes>
-      <packageUrl>pkg:maven/org.springframework/spring-webmvc@6.2.19</packageUrl>
+      <packageUrl regex="true">^pkg:maven/org\.springframework/[^@]+@6\.2\.19$</packageUrl>
       <cve>CVE-2026-47886</cve>
       <cve>CVE-2026-59283</cve>
    </suppress>
@@ -98,12 +78,7 @@
    <!-- RSocket: no es una dependencia del proyecto (sin spring-boot-starter-rsocket). -->
    <suppress until="2027-01-06Z">
       <notes><![CDATA[No aplica: RSocket no es una dependencia del proyecto. Ver nota superior del archivo.]]></notes>
-      <packageUrl>pkg:maven/org.springframework/spring-core@6.2.19</packageUrl>
-      <cve>CVE-2026-47888</cve>
-   </suppress>
-   <suppress until="2027-01-06Z">
-      <notes><![CDATA[No aplica: RSocket no es una dependencia del proyecto. Ver nota superior del archivo.]]></notes>
-      <packageUrl>pkg:maven/org.springframework/spring-webmvc@6.2.19</packageUrl>
+      <packageUrl regex="true">^pkg:maven/org\.springframework/[^@]+@6\.2\.19$</packageUrl>
       <cve>CVE-2026-47888</cve>
    </suppress>
 
@@ -112,32 +87,27 @@
         Map<String,String> deserializado por Jackson (@RequestBody). -->
    <suppress until="2027-01-06Z">
       <notes><![CDATA[No aplica: ningun controlador usa @ModelAttribute/WebDataBinder; los POST reciben Map<String,String> via Jackson. Ver nota superior del archivo.]]></notes>
-      <packageUrl>pkg:maven/org.springframework/spring-core@6.2.19</packageUrl>
-      <cve>CVE-2026-59282</cve>
-   </suppress>
-   <suppress until="2027-01-06Z">
-      <notes><![CDATA[No aplica: ningun controlador usa @ModelAttribute/WebDataBinder; los POST reciben Map<String,String> via Jackson. Ver nota superior del archivo.]]></notes>
-      <packageUrl>pkg:maven/org.springframework/spring-webmvc@6.2.19</packageUrl>
+      <packageUrl regex="true">^pkg:maven/org\.springframework/[^@]+@6\.2\.19$</packageUrl>
       <cve>CVE-2026-59282</cve>
    </suppress>
 
-   <!-- spring-security-core: LDAP embebido de pruebas (UnboundIdContainer),
+   <!-- spring-security-*: LDAP embebido de pruebas (UnboundIdContainer),
         OAuth2 DPoP y WebAuthn no son funcionalidades que este proyecto use
         (solo HTTP Basic + CSRF por cookie; sin spring-security-ldap,
         spring-security-oauth2-* ni spring-security-webauthn). -->
    <suppress until="2027-01-06Z">
       <notes><![CDATA[No aplica: no se usa el contenedor LDAP embebido de pruebas (sin spring-security-ldap). Ver nota superior del archivo.]]></notes>
-      <packageUrl>pkg:maven/org.springframework.security/spring-security-core@6.5.11</packageUrl>
+      <packageUrl regex="true">^pkg:maven/org\.springframework\.security/[^@]+@6\.5\.11$</packageUrl>
       <cve>CVE-2026-59270</cve>
    </suppress>
    <suppress until="2027-01-06Z">
       <notes><![CDATA[No aplica: no se usa OAuth2/DPoP (sin spring-security-oauth2-*). Ver nota superior del archivo.]]></notes>
-      <packageUrl>pkg:maven/org.springframework.security/spring-security-core@6.5.11</packageUrl>
+      <packageUrl regex="true">^pkg:maven/org\.springframework\.security/[^@]+@6\.5\.11$</packageUrl>
       <cve>CVE-2026-41707</cve>
    </suppress>
    <suppress until="2027-01-06Z">
       <notes><![CDATA[No aplica: no se usa WebAuthn (sin spring-security-webauthn). Ver nota superior del archivo.]]></notes>
-      <packageUrl>pkg:maven/org.springframework.security/spring-security-core@6.5.11</packageUrl>
+      <packageUrl regex="true">^pkg:maven/org\.springframework\.security/[^@]+@6\.5\.11$</packageUrl>
       <cve>CVE-2026-47841</cve>
    </suppress>
 

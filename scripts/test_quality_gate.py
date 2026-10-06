@@ -274,16 +274,45 @@ class SuprimidosYTramposTests(unittest.TestCase):
             hallazgos = gate.evaluar_trivy(ruta_trivy, cargadas)
         self.assertEqual(len(hallazgos), 1)
 
-    def test_cargar_supresiones_ignora_entradas_regex(self):
+    def test_supresion_con_regex_cubre_varios_artifacts_de_la_misma_version(self):
+        """dependency-check-suppressions.xml usa regex para cubrir todos los
+        JAR de un mismo release de Spring (spring-core, spring-tx, etc.) sin
+        enumerarlos uno por uno; el regex sigue anclado a la version exacta."""
         with tempfile.TemporaryDirectory() as tmp:
             ruta_supresiones = Path(tmp) / "dependency-check-suppressions.xml"
             _escribir_texto(ruta_supresiones, _supresiones_xml([{
                 "cve": "CVE-2026-47884",
-                "package_url": "^pkg:maven/org\\.springframework/.*$",
+                "package_url": r"^pkg:maven/org\.springframework/[^@]+@6\.2\.19$",
                 "regex": True,
+                "until": "2099-01-01Z",
             }]))
-            cargadas = gate.cargar_supresiones(ruta_supresiones)
-        self.assertEqual(cargadas, [])
+            supresiones = gate.cargar_supresiones(ruta_supresiones)
+
+            ruta_trivy = Path(tmp) / "sca-report.json"
+            _escribir_json(ruta_trivy, _trivy(
+                "CRITICAL", vuln_id="CVE-2026-47884",
+                pkg_name="org.springframework:spring-tx", version="6.2.19"))
+            hallazgos = gate.evaluar_trivy(ruta_trivy, supresiones)
+        self.assertEqual(hallazgos, [])
+
+    def test_supresion_con_regex_no_cubre_otra_version(self):
+        """El regex ancla la version exacta: una version distinta no queda suprimida."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta_supresiones = Path(tmp) / "dependency-check-suppressions.xml"
+            _escribir_texto(ruta_supresiones, _supresiones_xml([{
+                "cve": "CVE-2026-47884",
+                "package_url": r"^pkg:maven/org\.springframework/[^@]+@6\.2\.19$",
+                "regex": True,
+                "until": "2099-01-01Z",
+            }]))
+            supresiones = gate.cargar_supresiones(ruta_supresiones)
+
+            ruta_trivy = Path(tmp) / "sca-report.json"
+            _escribir_json(ruta_trivy, _trivy(
+                "CRITICAL", vuln_id="CVE-2026-47884",
+                pkg_name="org.springframework:spring-tx", version="6.2.20"))
+            hallazgos = gate.evaluar_trivy(ruta_trivy, supresiones)
+        self.assertEqual(len(hallazgos), 1)
 
     def test_cargar_supresiones_sin_archivo_devuelve_vacio(self):
         self.assertEqual(gate.cargar_supresiones("no-existe.xml"), [])

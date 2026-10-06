@@ -14,6 +14,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -223,10 +224,13 @@ NS_SUPRESIONES = {"dc": "https://jeremylong.github.io/DependencyCheck/dependency
 def cargar_supresiones(ruta):
     """Lee las entradas vigentes de dependency-check-suppressions.xml.
 
-    Solo se honran entradas con un packageUrl exacto (sin regex) y, si
-    tienen `until`, que todavia no haya vencido -- una supresion vencida
-    deja de aplicar, igual que en Dependency-Check, para forzar la
-    re-revision en vez de ocultar el hallazgo para siempre.
+    Honra tanto packageUrl exacto como con ``regex="true"`` (Dependency-Check
+    soporta ambos; un regex sigue exigiendo anclar la version exacta, por
+    ejemplo ``^pkg:maven/org\\.springframework/[^@]+@6\\.2\\.19$``, para que
+    siga sin aplicar en cuanto la dependencia cambie de version). Si tienen
+    `until`, debe no haber vencido -- una supresion vencida deja de aplicar,
+    igual que en Dependency-Check, para forzar la re-revision en vez de
+    ocultar el hallazgo para siempre.
     """
     ruta = Path(ruta)
     if not ruta.is_file():
@@ -250,13 +254,23 @@ def cargar_supresiones(ruta):
         cve_nodos = nodo.findall("dc:cve", NS_SUPRESIONES)
         if pkg_nodo is None or not cve_nodos:
             continue
-        if (pkg_nodo.get("regex") or "").lower() == "true":
-            continue  # solo se honran coincidencias exactas, no regex
-        package_url = (pkg_nodo.text or "").strip()
+        es_regex = (pkg_nodo.get("regex") or "").lower() == "true"
+        patron = (pkg_nodo.text or "").strip()
+        if es_regex:
+            try:
+                patron_compilado = re.compile(patron)
+            except re.error:
+                continue
+        else:
+            patron_compilado = None
         # Un <suppress> puede listar varios <cve> para el mismo packageUrl.
         for cve_nodo in cve_nodos:
             if (cve_nodo.text or "").strip():
-                supresiones.append({"cve": cve_nodo.text.strip(), "package_url": package_url})
+                supresiones.append({
+                    "cve": cve_nodo.text.strip(),
+                    "package_url": patron,
+                    "regex": patron_compilado,
+                })
     return supresiones
 
 
@@ -265,6 +279,14 @@ def _trivy_package_url(pkg_name, version):
     if len(grupo_artefacto) == 2:
         return f"pkg:maven/{grupo_artefacto[0]}/{grupo_artefacto[1]}@{version}"
     return f"pkg:maven/{pkg_name}@{version}"
+
+
+def _coincide_supresion(supresion, vuln_id, pkg_url):
+    if supresion["cve"] != vuln_id:
+        return False
+    if supresion["regex"] is not None:
+        return supresion["regex"].match(pkg_url) is not None
+    return supresion["package_url"] == pkg_url
 
 
 def evaluar_trivy(ruta_json, supresiones=None):
@@ -278,7 +300,7 @@ def evaluar_trivy(ruta_json, supresiones=None):
                 continue
             vuln_id = vuln.get("VulnerabilityID") or "(sin id)"
             pkg_url = _trivy_package_url(vuln.get("PkgName"), vuln.get("InstalledVersion"))
-            if any(s["cve"] == vuln_id and s["package_url"] == pkg_url for s in supresiones):
+            if any(_coincide_supresion(s, vuln_id, pkg_url) for s in supresiones):
                 continue
             hallazgos.append({
                 "herramienta": "Trivy",
