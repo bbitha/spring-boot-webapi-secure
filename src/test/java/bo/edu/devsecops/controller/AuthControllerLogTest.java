@@ -17,6 +17,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 @SpringBootTest
@@ -46,6 +47,7 @@ class AuthControllerLogTest {
     @Test
     void elLogNoContieneLaContrasena() throws Exception {
         mockMvc.perform(post("/api/auth/login")
+                .with(csrf())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"username\":\"admin\",\"password\":\"Secreto-Que-No-Debe-Loguearse\"}"));
 
@@ -59,6 +61,7 @@ class AuthControllerLogTest {
         // Si el username se logueara tal cual, esto inyectaria una linea de
         // log falsa ("FAKE LOG LINE") separada por un salto de linea real.
         mockMvc.perform(post("/api/auth/login")
+                .with(csrf())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"username\":\"admin\\r\\nFAKE LOG LINE\",\"password\":\"x\"}"));
 
