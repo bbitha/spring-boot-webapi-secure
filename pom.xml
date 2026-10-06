@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.5.14</version>
+        <version>3.5.16</version>
         <relativePath/>
     </parent>
 
@@ -19,6 +19,17 @@
 
     <properties>
         <java.version>21</java.version>
+        <!-- Umbral real que aplica el gate (falla con CVSS >= 7). En CI, el job
+             de Dependency-Check puede recibir un umbral mas alto solo para que
+             termine de generar los reportes; el gate sigue exigiendo 7. -->
+        <dc.failBuildOnCVSS>7</dc.failBuildOnCVSS>
+        <!-- Spring Boot 3.5.16 gestiona Jackson 2.21.4 y Tomcat 10.1.55, con
+             CVE HIGH/CRITICAL ya corregidos en parches posteriores dentro de
+             la misma linea (verificado con Trivy sobre el SBOM). -->
+        <jackson-bom.version>2.21.7</jackson-bom.version>
+        <tomcat.version>10.1.60</tomcat.version>
+        <!-- CVE-2026-34479 (log4j-api 2.24.3): corregido en 2.25.4. -->
+        <log4j2.version>2.26.1</log4j2.version>
     </properties>
 
     <dependencies>
@@ -44,11 +55,11 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Dependencia desactualizada agregada solo para el laboratorio SCA. -->
+        <!-- Codificacion de salida para evitar XSS reflejado (CommentController). -->
         <dependency>
-            <groupId>org.apache.commons</groupId>
-            <artifactId>commons-text</artifactId>
-            <version>1.9</version>
+            <groupId>org.owasp.encoder</groupId>
+            <artifactId>encoder</artifactId>
+            <version>1.3.1</version>
         </dependency>
 
         <dependency>
@@ -88,17 +99,42 @@
             <plugin>
                 <groupId>org.owasp</groupId>
                 <artifactId>dependency-check-maven</artifactId>
-                <version>11.1.1</version>
+                <version>13.0.0</version>
                 <configuration>
-                    <failBuildOnCVSS>7</failBuildOnCVSS>
-                    <nvdApiKey>05028C6D-2870-4358-A719-5424DDA781B3</nvdApiKey>
+                    <failBuildOnCVSS>${dc.failBuildOnCVSS}</failBuildOnCVSS>
+                    <nvdApiKeyEnvironmentVariable>NVD_API_KEY</nvdApiKeyEnvironmentVariable>
+                    <!-- Desde la 12.2.2, el analizador OSS Index exige credenciales
+                         de Sonatype; lo desactivamos porque no las usamos. -->
+                    <ossindexAnalyzerEnabled>false</ossindexAnalyzerEnabled>
+                    <!-- Fuera de ~/.m2 para poder cachear la base de la NVD por
+                         separado del repositorio de Maven en GitHub Actions. -->
+                    <dataDirectory>${user.home}/.dependency-check/data</dataDirectory>
+                    <suppressionFiles>
+                        <suppressionFile>dependency-check-suppressions.xml</suppressionFile>
+                    </suppressionFiles>
+                    <formats>
+                        <format>HTML</format>
+                        <format>JSON</format>
+                        <format>SARIF</format>
+                    </formats>
                 </configuration>
             </plugin>
-            <!-- SpotBugs -->
+            <!-- SpotBugs + FindSecBugs -->
             <plugin>
                 <groupId>com.github.spotbugs</groupId>
                 <artifactId>spotbugs-maven-plugin</artifactId>
                 <version>4.8.6.2</version>
+                <configuration>
+                    <xmlOutput>true</xmlOutput>
+                    <htmlOutput>true</htmlOutput>
+                    <plugins>
+                        <plugin>
+                            <groupId>com.h3xstream.findsecbugs</groupId>
+                            <artifactId>findsecbugs-plugin</artifactId>
+                            <version>1.14.0</version>
+                        </plugin>
+                    </plugins>
+                </configuration>
             </plugin>
             <!-- CycloneDX BOM Generator -->
             <plugin>

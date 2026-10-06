@@ -23,8 +23,11 @@ class DevSecOpsLabApplicationTests {
     }
 
     @Test
-    void adminEndpointIsCurrentlyExposedForTheLab() throws Exception {
+    void adminEndpointRequiresAuthentication() throws Exception {
+        // Antes del fix de autorizacion, este mismo request devolvia 200
+        // sin ninguna credencial (IDOR: cualquiera podia leer cualquier
+        // usuario). Ver AdminControllerTest para el caso autenticado.
         mockMvc.perform(get("/api/admin/users/1"))
-                .andExpect(status().isOk());
+                .andExpect(status().isUnauthorized());
     }
 }
