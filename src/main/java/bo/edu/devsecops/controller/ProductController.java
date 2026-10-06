@@ -21,7 +21,7 @@ public class ProductController {
 
     @GetMapping("/search")
     public List<Map<String, Object>> search(@RequestParam(defaultValue = "") String name) {
-        String sql = "SELECT id, name, price FROM products WHERE name LIKE '%" + name + "%'";
-        return jdbcTemplate.queryForList(sql);
+        String sql = "SELECT id, name, price FROM products WHERE name LIKE ?";
+        return jdbcTemplate.queryForList(sql, "%" + name + "%");
     }
 }
