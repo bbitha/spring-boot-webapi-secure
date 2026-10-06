@@ -36,6 +36,9 @@ public class SecurityConfig {
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .anyRequest().authenticated())
                 .httpBasic(Customizer.withDefaults())
+                // X-Content-Type-Options: nosniff ya viene por defecto;
+                // CSP no, hay que declararla (mitiga el XSS de CommentController).
+                .headers(headers -> headers.contentSecurityPolicy(csp -> csp.policyDirectives("default-src 'self'")))
                 .build();
     }
 
