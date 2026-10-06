@@ -99,18 +99,39 @@ def _spotbugs_xml(category, priority, tipo="SQL_INJECTION_SPRING_JDBC"):
     )
 
 
-def _trivy(severidad):
+def _trivy(severidad, vuln_id="CVE-2022-42889", pkg_name="commons-text", version="1.9"):
     return {
         "Results": [{
             "Target": "app",
             "Vulnerabilities": [{
-                "VulnerabilityID": "CVE-2022-42889",
-                "PkgName": "commons-text",
-                "InstalledVersion": "1.9",
+                "VulnerabilityID": vuln_id,
+                "PkgName": pkg_name,
+                "InstalledVersion": version,
                 "Severity": severidad,
             }],
         }]
     }
+
+
+def _supresiones_xml(entradas):
+    """``entradas``: lista de dict con cve, package_url y, opcional, until/regex."""
+    items = []
+    for e in entradas:
+        until_attr = f' until="{e["until"]}"' if e.get("until") else ""
+        regex_attr = f' regex="{str(e.get("regex")).lower()}"' if "regex" in e else ""
+        items.append(
+            f"<suppress{until_attr}>"
+            f"<notes><![CDATA[prueba]]></notes>"
+            f'<packageUrl{regex_attr}>{e["package_url"]}</packageUrl>'
+            f"<cve>{e['cve']}</cve>"
+            f"</suppress>"
+        )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">'
+        + "".join(items)
+        + "</suppressions>"
+    )
 
 
 class EvaluarPorHerramientaTests(unittest.TestCase):
@@ -200,6 +221,71 @@ class SuprimidosYTramposTests(unittest.TestCase):
             hallazgos = gate.evaluar_dependency_check(ruta)
         self.assertEqual(hallazgos, [])
 
+    def test_trivy_no_cuenta_hallazgo_con_supresion_vigente(self):
+        """Trivy no conoce dependency-check-suppressions.xml; evaluar_trivy
+        vuelve a leerlo para no bloquear dos veces el mismo CVE ya aceptado."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta_trivy = Path(tmp) / "sca-report.json"
+            _escribir_json(ruta_trivy, _trivy(
+                "CRITICAL", vuln_id="CVE-2026-47884",
+                pkg_name="org.springframework:spring-webmvc", version="6.2.19"))
+            ruta_supresiones = Path(tmp) / "dependency-check-suppressions.xml"
+            _escribir_texto(ruta_supresiones, _supresiones_xml([{
+                "cve": "CVE-2026-47884",
+                "package_url": "pkg:maven/org.springframework/spring-webmvc@6.2.19",
+                "until": "2099-01-01Z",
+            }]))
+            cargadas = gate.cargar_supresiones(ruta_supresiones)
+            hallazgos = gate.evaluar_trivy(ruta_trivy, cargadas)
+        self.assertEqual(hallazgos, [])
+
+    def test_trivy_si_cuenta_hallazgo_con_supresion_vencida(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta_trivy = Path(tmp) / "sca-report.json"
+            _escribir_json(ruta_trivy, _trivy(
+                "CRITICAL", vuln_id="CVE-2026-47884",
+                pkg_name="org.springframework:spring-webmvc", version="6.2.19"))
+            ruta_supresiones = Path(tmp) / "dependency-check-suppressions.xml"
+            _escribir_texto(ruta_supresiones, _supresiones_xml([{
+                "cve": "CVE-2026-47884",
+                "package_url": "pkg:maven/org.springframework/spring-webmvc@6.2.19",
+                "until": "2020-01-01Z",  # vencida
+            }]))
+            cargadas = gate.cargar_supresiones(ruta_supresiones)
+            hallazgos = gate.evaluar_trivy(ruta_trivy, cargadas)
+        self.assertEqual(len(hallazgos), 1)
+
+    def test_trivy_si_cuenta_hallazgo_con_otra_version_no_suprimida(self):
+        """La supresion es por version exacta: una version distinta no queda cubierta."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta_trivy = Path(tmp) / "sca-report.json"
+            _escribir_json(ruta_trivy, _trivy(
+                "CRITICAL", vuln_id="CVE-2026-47884",
+                pkg_name="org.springframework:spring-webmvc", version="6.2.20"))
+            ruta_supresiones = Path(tmp) / "dependency-check-suppressions.xml"
+            _escribir_texto(ruta_supresiones, _supresiones_xml([{
+                "cve": "CVE-2026-47884",
+                "package_url": "pkg:maven/org.springframework/spring-webmvc@6.2.19",
+                "until": "2099-01-01Z",
+            }]))
+            cargadas = gate.cargar_supresiones(ruta_supresiones)
+            hallazgos = gate.evaluar_trivy(ruta_trivy, cargadas)
+        self.assertEqual(len(hallazgos), 1)
+
+    def test_cargar_supresiones_ignora_entradas_regex(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta_supresiones = Path(tmp) / "dependency-check-suppressions.xml"
+            _escribir_texto(ruta_supresiones, _supresiones_xml([{
+                "cve": "CVE-2026-47884",
+                "package_url": "^pkg:maven/org\\.springframework/.*$",
+                "regex": True,
+            }]))
+            cargadas = gate.cargar_supresiones(ruta_supresiones)
+        self.assertEqual(cargadas, [])
+
+    def test_cargar_supresiones_sin_archivo_devuelve_vacio(self):
+        self.assertEqual(gate.cargar_supresiones("no-existe.xml"), [])
+
     def test_semgrep_sarif_sin_level_por_resultado(self):
         """El resultado no trae "level": el nivel se resuelve por la regla (ruleId)."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -259,6 +345,25 @@ class EvaluarPipelineTests(unittest.TestCase):
             resultado = gate.evaluar_pipeline(tmp, needs, self.REQUERIDOS)
         self.assertEqual(gate.decidir_salida(resultado), gate.EXIT_BLOQUEADO)
         self.assertIn("build-and-test", resultado["fallos_previos"])
+
+    def test_hallazgo_de_trivy_suprimido_no_bloquea_el_pipeline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _poblar_reportes_dir(tmp)
+            _escribir_json(
+                Path(tmp) / "report-sbom-trivy" / "sca-report.json",
+                _trivy("CRITICAL", vuln_id="CVE-2026-47884",
+                       pkg_name="org.springframework:spring-webmvc", version="6.2.19"),
+            )
+            ruta_supresiones = Path(tmp) / "dependency-check-suppressions.xml"
+            _escribir_texto(ruta_supresiones, _supresiones_xml([{
+                "cve": "CVE-2026-47884",
+                "package_url": "pkg:maven/org.springframework/spring-webmvc@6.2.19",
+                "until": "2099-01-01Z",
+            }]))
+            needs = {"build-and-test": {"result": "success"}}
+            resultado = gate.evaluar_pipeline(tmp, needs, self.REQUERIDOS, ruta_supresiones)
+        self.assertEqual(gate.decidir_salida(resultado), gate.EXIT_OK)
+        self.assertEqual(resultado["hallazgos"], [])
 
     def test_job_previo_cancelado_bloquea(self):
         with tempfile.TemporaryDirectory() as tmp:

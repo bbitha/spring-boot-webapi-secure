@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+   <!--
+     CVE-2026-47884: SSRF/RCE en Spring MVC por XsltView cuando la app tiene
+     un mapping "/**" que resuelve vistas sin nombre explicito, usando
+     XsltView. Esta aplicacion es una API REST pura (@RestController en
+     todos los controladores); no hay ViewResolver, XsltView ni mappings
+     catch-all configurados en ningun lado del codigo. No aplica.
+
+     Sin fix disponible dentro de Spring Framework 6.2.x (la version que
+     gestiona la linea Spring Boot 3.5.x); el fix real es Spring Framework
+     7.0.9, que requiere Spring Boot 4.x. Revisar de nuevo al evaluar esa
+     migracion o si se agrega renderizado de vistas al proyecto.
+   -->
+   <suppress until="2027-01-06Z">
+      <notes><![CDATA[
+      No aplica: la app no usa XsltView ni tiene mappings "/**" de vistas.
+      Sin fix dentro de la linea Spring Framework 6.2.x (Spring Boot 3.5.x).
+      ]]></notes>
+      <packageUrl>pkg:maven/org.springframework/spring-webmvc@6.2.19</packageUrl>
+      <cve>CVE-2026-47884</cve>
+   </suppress>
+</suppressions>

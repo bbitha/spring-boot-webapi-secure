@@ -11,6 +11,7 @@ Solo usa la biblioteca estandar de Python.
 """
 
 import argparse
+import datetime
 import json
 import os
 import sys
@@ -208,20 +209,81 @@ def evaluar_spotbugs(ruta_xml):
 # ---------------------------------------------------------------------------
 # Trivy (JSON, SBOM de la app o imagen): bloquea HIGH o CRITICAL.
 # No se usa --ignore-unfixed sobre las librerias de la aplicacion.
+#
+# Trivy no conoce dependency-check-suppressions.xml (ese archivo solo lo lee
+# el plugin de Dependency-Check). Para no bloquear dos veces por el mismo
+# hallazgo ya documentado y aceptado alli, este evaluador vuelve a leer el
+# mismo XML y descarta los hallazgos de Trivy que coincidan exactamente en
+# CVE + packageUrl (version exacta) con una supresion vigente.
 # ---------------------------------------------------------------------------
 
-def evaluar_trivy(ruta_json):
+NS_SUPRESIONES = {"dc": "https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd"}
+
+
+def cargar_supresiones(ruta):
+    """Lee las entradas vigentes de dependency-check-suppressions.xml.
+
+    Solo se honran entradas con un packageUrl exacto (sin regex) y, si
+    tienen `until`, que todavia no haya vencido -- una supresion vencida
+    deja de aplicar, igual que en Dependency-Check, para forzar la
+    re-revision en vez de ocultar el hallazgo para siempre.
+    """
+    ruta = Path(ruta)
+    if not ruta.is_file():
+        return []
+    try:
+        raiz = _cargar_xml(ruta)
+    except ReporteCorrupto:
+        return []
+
+    hoy = datetime.date.today()
+    supresiones = []
+    for nodo in raiz.findall("dc:suppress", NS_SUPRESIONES):
+        until = nodo.get("until")
+        if until:
+            try:
+                if hoy > datetime.date.fromisoformat(until.rstrip("Zz")):
+                    continue  # vencida: no se aplica
+            except ValueError:
+                continue
+        pkg_nodo = nodo.find("dc:packageUrl", NS_SUPRESIONES)
+        cve_nodo = nodo.find("dc:cve", NS_SUPRESIONES)
+        if pkg_nodo is None or cve_nodo is None or not (cve_nodo.text or "").strip():
+            continue
+        if (pkg_nodo.get("regex") or "").lower() == "true":
+            continue  # solo se honran coincidencias exactas, no regex
+        supresiones.append({
+            "cve": cve_nodo.text.strip(),
+            "package_url": (pkg_nodo.text or "").strip(),
+        })
+    return supresiones
+
+
+def _trivy_package_url(pkg_name, version):
+    grupo_artefacto = (pkg_name or "").split(":", 1)
+    if len(grupo_artefacto) == 2:
+        return f"pkg:maven/{grupo_artefacto[0]}/{grupo_artefacto[1]}@{version}"
+    return f"pkg:maven/{pkg_name}@{version}"
+
+
+def evaluar_trivy(ruta_json, supresiones=None):
     datos = _cargar_json(ruta_json)
+    supresiones = supresiones or []
     hallazgos = []
     for resultado in datos.get("Results", []) or []:
         for vuln in resultado.get("Vulnerabilities", []) or []:
             severidad = (vuln.get("Severity") or "").upper()
-            if severidad in ("HIGH", "CRITICAL"):
-                hallazgos.append({
-                    "herramienta": "Trivy",
-                    "id": vuln.get("VulnerabilityID") or "(sin id)",
-                    "detalle": f"{vuln.get('PkgName', '?')}@{vuln.get('InstalledVersion', '?')} - {severidad}",
-                })
+            if severidad not in ("HIGH", "CRITICAL"):
+                continue
+            vuln_id = vuln.get("VulnerabilityID") or "(sin id)"
+            pkg_url = _trivy_package_url(vuln.get("PkgName"), vuln.get("InstalledVersion"))
+            if any(s["cve"] == vuln_id and s["package_url"] == pkg_url for s in supresiones):
+                continue
+            hallazgos.append({
+                "herramienta": "Trivy",
+                "id": vuln_id,
+                "detalle": f"{vuln.get('PkgName', '?')}@{vuln.get('InstalledVersion', '?')} - {severidad}",
+            })
     return hallazgos
 
 
@@ -290,7 +352,7 @@ def _buscar_archivos(reportes_dir, spec):
     return []
 
 
-def evaluar_pipeline(reportes_dir, needs, requeridos):
+def evaluar_pipeline(reportes_dir, needs, requeridos, ruta_supresiones="dependency-check-suppressions.xml"):
     """Evalua todos los reportes disponibles y los resultados de los jobs previos.
 
     ``needs`` es el contexto ``needs`` de Actions (o un dict equivalente en
@@ -302,6 +364,7 @@ def evaluar_pipeline(reportes_dir, needs, requeridos):
         if (info or {}).get("result") in ("failure", "cancelled")
     )
 
+    supresiones = cargar_supresiones(ruta_supresiones)
     hallazgos = []
     reportes_faltantes = []
     por_herramienta = {}
@@ -317,7 +380,10 @@ def evaluar_pipeline(reportes_dir, needs, requeridos):
         try:
             encontrados = []
             for archivo in archivos:
-                encontrados.extend(spec["evaluar"](archivo))
+                if clave == "sbom-trivy":
+                    encontrados.extend(spec["evaluar"](archivo, supresiones))
+                else:
+                    encontrados.extend(spec["evaluar"](archivo))
         except ReporteCorrupto:
             # Un reporte corrupto siempre bloquea fail-closed, aunque la
             # herramienta no fuera obligatoria para este evento: si el
@@ -409,6 +475,15 @@ def main(argv=None):
         "--resumen", default=None,
         help="Archivo donde escribir el Step Summary. Por defecto, $GITHUB_STEP_SUMMARY o la salida estandar.",
     )
+    parser.add_argument(
+        "--supresiones", default="dependency-check-suppressions.xml",
+        help=(
+            "Archivo de supresiones de Dependency-Check. Tambien se aplica a "
+            "los hallazgos de Trivy (que no conoce ese archivo), para no "
+            "bloquear dos veces por el mismo CVE ya documentado como no "
+            "aplicable. Si no existe, no se suprime nada."
+        ),
+    )
     args = parser.parse_args(argv)
 
     requeridos = {c.strip() for c in args.requeridos.split(",") if c.strip()}
@@ -420,7 +495,7 @@ def main(argv=None):
         needs_env = os.environ.get("NEEDS_JSON", "").strip()
         needs = json.loads(needs_env) if needs_env else {}
 
-    resultado = evaluar_pipeline(args.reportes_dir, needs, requeridos)
+    resultado = evaluar_pipeline(args.reportes_dir, needs, requeridos, args.supresiones)
     resumen = generar_resumen_markdown(resultado, requeridos)
 
     destino = args.resumen or os.environ.get("GITHUB_STEP_SUMMARY")
