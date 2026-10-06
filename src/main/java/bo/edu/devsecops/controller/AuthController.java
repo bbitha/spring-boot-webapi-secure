@@ -38,12 +38,18 @@ public class AuthController {
         String username = credentials.getOrDefault("username", "");
         String password = credentials.getOrDefault("password", "");
 
-        LOGGER.info("Intento de acceso: usuario={}, password={}", username, password);
+        LOGGER.info("Intento de acceso: usuario={}", sanitizarParaLog(username));
 
         if (credencialesValidas(username, password)) {
             return ResponseEntity.ok(Map.of("message", "Acceso autorizado"));
         }
         return ResponseEntity.status(401).body(Map.of("error", "Credenciales incorrectas"));
+    }
+
+    private static String sanitizarParaLog(String value) {
+        // FindSecBugs acepta esta forma (replace literal); con replaceAll y
+        // una regex sigue marcando CRLF_INJECTION_LOGS.
+        return value.replace("\r", "_").replace("\n", "_");
     }
 
     private boolean credencialesValidas(String username, String password) {
