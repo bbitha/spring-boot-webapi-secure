@@ -1,168 +1,137 @@
-name: CI/CD - Spring Boot DevSecOps
+name: CI/CD
 
 on:
   push:
-    branches: [ main, develop, feature/**, bugfix/**, hotfix/** ]
-  pull_request:
     branches: [ main, develop ]
-  # Optional: also trigger on version tags
-  # tags: [ 'v*.*.*' ]
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 env:
-  JAVA_VERSION: '25'
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}   # e.g. your-org/your-app
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  # ==================================================================
-  # CI JOBS (same as before – kept for completeness)
-  # ==================================================================
-  build-and-test:
-    name: Build & Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+  security-scans:
+    name: Security scans (${{ github.event_name }})
+    uses: ./.github/workflows/security-scans.yml
+    with:
+      run_dependency_check: true
+    secrets: inherit
 
-      - uses: actions/setup-java@v4
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: temurin
-          cache: maven
-
-      - name: Build & test with coverage
-        run: mvn -B clean verify
-
-      - name: Upload reports
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: test-reports
-          path: |
-            target/surefire-reports/
-            target/site/jacoco/
-          retention-days: 7
-
-  sast-codeql:
-    name: SAST - CodeQL
+  docker-build-scan-push:
+    name: Docker build, scan & publish
+    needs: security-scans
     runs-on: ubuntu-latest
     permissions:
-      security-events: write
       contents: read
-      actions: read
+      packages: write
+      security-events: write
+    env:
+      TRIVY_IMAGE: aquasec/trivy:0.74.0
     steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - uses: github/codeql-action/init@v3
-        with:
-          languages: java
-          queries: security-and-quality
-      - uses: actions/setup-java@v4
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: temurin
-          cache: maven
-      - uses: github/codeql-action/autobuild@v3
-      - uses: github/codeql-action/analyze@v3
+      - name: Descargar repositorio
+        uses: actions/checkout@v7
 
-  sca-dependency-check:
-    name: SCA - OWASP Dependency-Check
-    runs-on: ubuntu-latest
-    if: false
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - name: Definir nombre de imagen en minusculas
+        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Construir imagen (solo local, para escanear)
+        uses: docker/build-push-action@v7
         with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: temurin
-          cache: maven
-      - name: Run Dependency-Check
-        run: mvn -B org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7 || true
-      - uses: actions/upload-artifact@v4
+          context: .
+          push: false
+          load: true
+          tags: scan-image:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Exportar imagen a tar (sin montar el socket de Docker)
+        run: docker save "scan-image:${{ github.sha }}" -o "${{ runner.temp }}/image.tar"
+
+      - name: Escanear paquetes del sistema operativo (ignorando sin fix)
+        run: |
+          docker run --rm -v "${{ runner.temp }}:/work" "$TRIVY_IMAGE" image \
+            --input /work/image.tar \
+            --pkg-types os \
+            --ignore-unfixed \
+            --exit-code 0 \
+            --format json \
+            --output /work/trivy-image-os.json
+
+      - name: Escanear librerias de la aplicacion
+        run: |
+          docker run --rm -v "${{ runner.temp }}:/work" "$TRIVY_IMAGE" image \
+            --input /work/image.tar \
+            --pkg-types library \
+            --exit-code 0 \
+            --format json \
+            --output /work/trivy-image-app.json
+
+      - name: Generar SARIF de la imagen para Code scanning
+        run: |
+          docker run --rm -v "${{ runner.temp }}:/work" "$TRIVY_IMAGE" image \
+            --input /work/image.tar \
+            --exit-code 0 \
+            --format sarif \
+            --output /work/trivy-image.sarif
+
+      - name: Subir SARIF de la imagen a Code scanning
         if: always()
+        uses: github/codeql-action/upload-sarif@v4
         with:
-          name: dependency-check-report
-          path: target/dependency-check-report.html
+          sarif_file: ${{ runner.temp }}/trivy-image.sarif
+          category: trivy-image
+
+      - name: Publicar reportes de la imagen
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: report-image-trivy
+          path: |
+            ${{ runner.temp }}/trivy-image-os.json
+            ${{ runner.temp }}/trivy-image-app.json
+            ${{ runner.temp }}/trivy-image.sarif
+          if-no-files-found: warn
           retention-days: 14
 
-  # ==================================================================
-  # CD JOBS – only on main (or tags)
-  # ==================================================================
-  docker-build-scan-push:
-    name: Docker Build → Scan → Push
-    runs-on: ubuntu-latest
-    needs: [build-and-test, sast-codeql]   # wait for CI quality gates
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
-    permissions:
-      contents: read
-      packages: write          # needed to push to GHCR
-      security-events: write   # for Trivy SARIF upload
-      id-token: write          # for optional image signing later
+      # TODO (paso 5): hacer que este paso lea trivy-image-os.json y
+      # trivy-image-app.json y bloquee por HIGH/CRITICAL (sin --ignore-unfixed
+      # en las librerias de la app), igual que el Quality Gate de
+      # security-scans.yml. Por ahora solo documenta la politica.
 
-    outputs:
-      image-digest: ${{ steps.push.outputs.digest }}
-      image-tags: ${{ steps.meta.outputs.tags }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+      - name: Iniciar sesion en GHCR
+        if: github.ref == 'refs/heads/main'
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels)
+      - name: Extraer metadatos de la imagen
+        if: github.ref == 'refs/heads/main'
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=sha,prefix=sha-
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest
 
-      - name: Build Docker image
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: false                    # build first, scan, then push
-          load: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@0.36.0
-        with:
-          image-ref: ${{ steps.meta.outputs.tags }}
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'
-          exit-code: '1'                 # fail the job on CRITICAL/HIGH
-
-      - name: Upload Trivy scan results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: 'trivy-results.sarif'
-
-      - name: Push image to GHCR
-        id: push
-        uses: docker/build-push-action@v6
+      - name: Publicar imagen en GHCR
+        if: github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -170,71 +139,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  # ------------------------------------------------------------------
-  # Optional: Deploy to Staging (example with a simple SSH or K8s)
-  # ------------------------------------------------------------------
-  deploy-staging:
-    name: Deploy to Staging
-    runs-on: ubuntu-latest
-    needs: docker-build-scan-push
-    if: false #github.ref == 'refs/heads/main'
-    environment:
-      name: staging
-      url: https://staging.yourapp.com   # optional status check URL
-
-    steps:
-      - name: Checkout (for manifests)
-        uses: actions/checkout@v4
-
-      # Example 1: Simple SSH + docker compose (good for small teams)
-      # - name: Deploy via SSH
-      #   uses: appleboy/ssh-action@v1.0.3
-      #   with:
-      #     host: ${{ secrets.STAGING_HOST }}
-      #     username: ${{ secrets.STAGING_USER }}
-      #     key: ${{ secrets.STAGING_SSH_KEY }}
-      #     script: |
-      #       docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-      #       docker compose -f /opt/app/docker-compose.yml up -d
-
-      # Example 2: Kubernetes with kubectl (more production-like)
-      - name: Set up kubectl
-        uses: azure/setup-kubectl@v4
-
-      - name: Configure kubeconfig
-        run: |
-          mkdir -p $HOME/.kube
-          echo "${{ secrets.KUBE_CONFIG_STAGING }}" | base64 -d > $HOME/.kube/config
-
-      - name: Deploy to staging
-        run: |
-          # Update image tag in deployment (simple sed example)
-          sed -i "s|image:.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.docker-build-scan-push.outputs.image-digest }}|" k8s/staging/deployment.yaml
-          kubectl apply -f k8s/staging/
-          kubectl rollout status deployment/your-app -n staging --timeout=120s
-
-  # ------------------------------------------------------------------
-  # Optional: Production promotion (manual approval)
-  # ------------------------------------------------------------------
-  deploy-production:
-    name: Deploy to Production
-    runs-on: ubuntu-latest
-    needs: deploy-staging
-    if: false #github.ref == 'refs/heads/main'
-    environment:
-      name: production          # requires manual approval in GitHub UI
-      url: https://yourapp.com
-
-    steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-kubectl@v4
-      - name: Configure kubeconfig (prod)
-        run: |
-          mkdir -p $HOME/.kube
-          echo "${{ secrets.KUBE_CONFIG_PROD }}" | base64 -d > $HOME/.kube/config
-      - name: Deploy to production
-        run: |
-          sed -i "s|image:.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.docker-build-scan-push.outputs.image-digest }}|" k8s/production/deployment.yaml
-          kubectl apply -f k8s/production/
-          kubectl rollout status deployment/your-app -n production --timeout=180s

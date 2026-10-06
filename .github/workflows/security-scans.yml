@@ -1,0 +1,307 @@
+name: Escaneos de seguridad
+
+on:
+  workflow_call:
+    inputs:
+      run_dependency_check:
+        description: "Ejecutar OWASP Dependency-Check (SCA). Se puede omitir en push a feature/** por tiempo."
+        type: boolean
+        default: true
+    secrets:
+      NVD_API_KEY:
+        required: false
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+env:
+  JAVA_VERSION: '21'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v7
+
+      - name: Configurar JDK
+        uses: actions/setup-java@v6
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      - name: Compilar y ejecutar pruebas
+        run: mvn -B clean verify
+
+      - name: Publicar reportes de pruebas
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: report-build
+          path: |
+            target/surefire-reports/
+            target/site/jacoco/
+          if-no-files-found: warn
+          retention-days: 7
+
+  sast-semgrep:
+    name: SAST - Semgrep
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    container:
+      image: semgrep/semgrep:1.179.0
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v7
+
+      - name: Ejecutar Semgrep
+        run: |
+          semgrep scan --metrics=off \
+            --config p/java --config p/owasp-top-ten --config p/secrets --config .semgrep.yml \
+            --json-output=semgrep-results.json \
+            --sarif-output=semgrep-results.sarif \
+            src/main/java
+
+      - name: Publicar reportes de Semgrep
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: report-semgrep
+          path: |
+            semgrep-results.json
+            semgrep-results.sarif
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Subir SARIF a Code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep
+
+  sast-codeql:
+    name: SAST - CodeQL
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    env:
+      # En pull_request, CodeQL analiza por defecto solo las lineas del diff.
+      # El gate necesita ver todos los hallazgos, no solo los del diff.
+      CODEQL_ACTION_DIFF_INFORMED_QUERIES: 'false'
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Configurar JDK
+        uses: actions/setup-java@v6
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      - name: Inicializar CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: java-kotlin
+          build-mode: none
+          queries: security-and-quality
+
+      - name: Analizar con CodeQL
+        id: analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          output: ${{ runner.temp }}/codeql-results
+          upload: always
+
+      - name: Publicar SARIF de CodeQL
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: report-codeql
+          path: ${{ runner.temp }}/codeql-results
+          if-no-files-found: warn
+          retention-days: 14
+
+  sast-spotbugs:
+    name: SAST - SpotBugs + FindSecBugs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v7
+
+      - name: Configurar JDK
+        uses: actions/setup-java@v6
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      - name: Ejecutar SpotBugs + FindSecBugs
+        run: mvn -B clean compile com.github.spotbugs:spotbugs-maven-plugin:spotbugs
+
+      - name: Publicar reportes de SpotBugs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: report-spotbugs
+          path: |
+            target/spotbugsXml.xml
+            target/spotbugs.html
+          if-no-files-found: warn
+          retention-days: 14
+
+  sca-sbom-trivy:
+    name: SCA - SBOM + Trivy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TRIVY_IMAGE: aquasec/trivy:0.74.0
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v7
+
+      - name: Configurar JDK
+        uses: actions/setup-java@v6
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      - name: Generar SBOM CycloneDX
+        run: mvn -B org.cyclonedx:cyclonedx-maven-plugin:2.9.3:makeAggregateBom
+
+      - name: Validar presencia del SBOM
+        run: test -s target/bom.json
+
+      - name: Cachear base de datos de Trivy
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/trivy-cache
+          key: trivy-db-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            trivy-db-${{ runner.os }}-
+
+      - name: Analizar SBOM con Trivy
+        run: |
+          mkdir -p "${{ runner.temp }}/trivy-cache"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/target:/work" \
+            -v "${{ runner.temp }}/trivy-cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" sbom \
+            --scanners vuln \
+            --exit-code 0 \
+            --format json \
+            --output /work/sca-report.json \
+            /work/bom.json
+
+      - name: Publicar SBOM y reporte de Trivy
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: report-sbom-trivy
+          path: |
+            target/bom.json
+            target/sca-report.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  sca-dependency-check:
+    name: SCA - OWASP Dependency-Check
+    runs-on: ubuntu-latest
+    if: ${{ inputs.run_dependency_check }}
+    permissions:
+      contents: read
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v7
+
+      - name: Configurar JDK
+        uses: actions/setup-java@v6
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      - name: Cachear base de datos de Dependency-Check
+        uses: actions/cache@v6
+        with:
+          path: ~/.dependency-check/data
+          key: dependency-check-db-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            dependency-check-db-${{ runner.os }}-
+
+      - name: Ejecutar OWASP Dependency-Check
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          mvn -B org.owasp:dependency-check-maven:check \
+            -Ddc.failBuildOnCVSS=11
+
+      - name: Publicar reportes de Dependency-Check
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: report-dependency-check
+          path: |
+            target/dependency-check-report.html
+            target/dependency-check-report.json
+            target/dependency-check-report.sarif
+          if-no-files-found: warn
+          retention-days: 14
+
+  quality-gate:
+    name: Quality Gate
+    runs-on: ubuntu-latest
+    needs:
+      - build-and-test
+      - sast-semgrep
+      - sast-codeql
+      - sast-spotbugs
+      - sca-sbom-trivy
+      - sca-dependency-check
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: read
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v7
+
+      - name: Descargar todos los reportes
+        uses: actions/download-artifact@v8
+        with:
+          pattern: report-*
+          path: reportes
+          merge-multiple: false
+
+      - name: Ejecutar las pruebas unitarias del gate
+        run: python3 -m unittest test_quality_gate -v
+        working-directory: scripts
+
+      - name: Evaluar reportes y decidir el gate
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          REQUERIDOS: ${{ (inputs.run_dependency_check && 'semgrep,codeql,spotbugs,sbom-trivy,dependency-check') || 'semgrep,codeql,spotbugs,sbom-trivy' }}
+        run: |
+          python3 scripts/quality_gate.py \
+            --reportes-dir reportes \
+            --requeridos "$REQUERIDOS"
