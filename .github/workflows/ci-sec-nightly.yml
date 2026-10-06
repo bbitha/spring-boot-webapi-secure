@@ -5,12 +5,6 @@ on:
     - cron: '55 20 * * *'
       timezone: America/La_Paz
   workflow_dispatch:
-  # TEMPORAL (Paso 6): workflow_dispatch no encuentra este archivo porque
-  # GitHub todavia no lo registro (nunca corrio en este fork). pull_request
-  # no tiene esa restriccion -- evalua el "on:" del commit directamente.
-  # Se revierte en el siguiente commit, ya con la captura del nightly en rojo.
-  pull_request:
-    branches: [ develop ]
 
 permissions:
   contents: read
