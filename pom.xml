@@ -28,6 +28,8 @@
              la misma linea (verificado con Trivy sobre el SBOM). -->
         <jackson-bom.version>2.21.7</jackson-bom.version>
         <tomcat.version>10.1.60</tomcat.version>
+        <!-- CVE-2026-34479 (log4j-api 2.24.3): corregido en 2.25.4. -->
+        <log4j2.version>2.26.1</log4j2.version>
     </properties>
 
     <dependencies>

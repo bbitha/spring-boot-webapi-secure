@@ -247,15 +247,16 @@ def cargar_supresiones(ruta):
             except ValueError:
                 continue
         pkg_nodo = nodo.find("dc:packageUrl", NS_SUPRESIONES)
-        cve_nodo = nodo.find("dc:cve", NS_SUPRESIONES)
-        if pkg_nodo is None or cve_nodo is None or not (cve_nodo.text or "").strip():
+        cve_nodos = nodo.findall("dc:cve", NS_SUPRESIONES)
+        if pkg_nodo is None or not cve_nodos:
             continue
         if (pkg_nodo.get("regex") or "").lower() == "true":
             continue  # solo se honran coincidencias exactas, no regex
-        supresiones.append({
-            "cve": cve_nodo.text.strip(),
-            "package_url": (pkg_nodo.text or "").strip(),
-        })
+        package_url = (pkg_nodo.text or "").strip()
+        # Un <suppress> puede listar varios <cve> para el mismo packageUrl.
+        for cve_nodo in cve_nodos:
+            if (cve_nodo.text or "").strip():
+                supresiones.append({"cve": cve_nodo.text.strip(), "package_url": package_url})
     return supresiones
 
 

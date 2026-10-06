@@ -114,16 +114,18 @@ def _trivy(severidad, vuln_id="CVE-2022-42889", pkg_name="commons-text", version
 
 
 def _supresiones_xml(entradas):
-    """``entradas``: lista de dict con cve, package_url y, opcional, until/regex."""
+    """``entradas``: lista de dict con package_url, 'cve' (uno) o 'cves' (varios), y opcional until/regex."""
     items = []
     for e in entradas:
         until_attr = f' until="{e["until"]}"' if e.get("until") else ""
         regex_attr = f' regex="{str(e.get("regex")).lower()}"' if "regex" in e else ""
+        cves = e.get("cves") or [e["cve"]]
+        cve_tags = "".join(f"<cve>{c}</cve>" for c in cves)
         items.append(
             f"<suppress{until_attr}>"
             f"<notes><![CDATA[prueba]]></notes>"
             f'<packageUrl{regex_attr}>{e["package_url"]}</packageUrl>'
-            f"<cve>{e['cve']}</cve>"
+            f"{cve_tags}"
             f"</suppress>"
         )
     return (
@@ -285,6 +287,22 @@ class SuprimidosYTramposTests(unittest.TestCase):
 
     def test_cargar_supresiones_sin_archivo_devuelve_vacio(self):
         self.assertEqual(gate.cargar_supresiones("no-existe.xml"), [])
+
+    def test_cargar_supresiones_con_varios_cve_en_un_mismo_bloque(self):
+        """Un <suppress> puede listar varios <cve> para el mismo packageUrl
+        (asi esta organizado dependency-check-suppressions.xml, por grupo de
+        CVEs que comparten la misma justificacion)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta_supresiones = Path(tmp) / "dependency-check-suppressions.xml"
+            _escribir_texto(ruta_supresiones, _supresiones_xml([{
+                "cves": ["CVE-2026-0001", "CVE-2026-0002"],
+                "package_url": "pkg:maven/org.springframework/spring-core@6.2.19",
+                "until": "2099-01-01Z",
+            }]))
+            cargadas = gate.cargar_supresiones(ruta_supresiones)
+        self.assertEqual(len(cargadas), 2)
+        self.assertEqual({c["cve"] for c in cargadas}, {"CVE-2026-0001", "CVE-2026-0002"})
+        self.assertTrue(all(c["package_url"] == "pkg:maven/org.springframework/spring-core@6.2.19" for c in cargadas))
 
     def test_semgrep_sarif_sin_level_por_resultado(self):
         """El resultado no trae "level": el nivel se resuelve por la regla (ruleId)."""
